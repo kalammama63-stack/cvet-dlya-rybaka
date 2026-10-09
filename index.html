@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111">
+<title>Цвет для рыбака</title>
+<style>
+  :root { --bg:#111; --panel:#1c1c1c; --line:#3a3a3a; --text:#f2f2f2; --dim:#a8a8a8; --accent:#fff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font:17px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+  button { font:inherit; color:var(--text); background:#2a2a2a; border:2px solid var(--line);
+    border-radius:12px; min-height:48px; padding:8px 12px; cursor:pointer; }
+  button:active { background:#3a3a3a; }
+  button.on { border-color:var(--accent); border-width:3px; background:#333; font-weight:700; }
+  button.on::before { content:"✓ "; }
+
+  header { display:flex; gap:6px; padding:8px; padding-top:max(8px, env(safe-area-inset-top)); }
+  header .tab { flex:1; font-size:15px; padding:6px 4px; line-height:1.15; }
+  header .tab.on::before { content:""; }
+  header .tab.on { text-decoration:underline; text-underline-offset:4px; }
+  #voiceBtn { flex:0 0 52px; font-size:22px; padding:0; }
+
+  #stage { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center;
+    background:#000; position:relative; }
+  #view { touch-action:manipulation; display:block; }
+  #video { position:absolute; width:2px; height:2px; opacity:0; pointer-events:none; }
+  #frozenTag { position:absolute; top:8px; left:8px; background:#000c; border:2px solid #fff;
+    border-radius:8px; padding:2px 10px; font-weight:700; display:none; }
+
+  #panel { flex:0 0 auto; background:var(--panel); border-top:1px solid var(--line);
+    padding:10px 10px max(10px, env(safe-area-inset-bottom)); max-height:46dvh; overflow-y:auto; }
+  #result { font-size:24px; font-weight:700; min-height:32px; display:flex; align-items:center; gap:10px; }
+  #swatch { width:28px; height:28px; border-radius:6px; border:2px solid #fff; flex:0 0 auto; display:none; }
+  #hint { color:var(--dim); font-size:15px; margin:4px 0 8px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .row > button { flex:1 1 auto; }
+  .grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; margin-top:8px; }
+  .grid button { font-size:15px; padding:6px 4px; min-height:44px; }
+  #shades button { font-size:15px; }
+  #micBtn.listening { border-color:#fff; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { background:#555; } }
+
+  #start { position:fixed; inset:0; background:var(--bg); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; padding:24px; text-align:center; gap:16px; z-index:10; }
+  #start h1 { margin:0; font-size:28px; }
+  #start p { margin:0; color:var(--dim); max-width:28em; }
+  #startBtn { font-size:22px; padding:16px 28px; border-color:#fff; }
+  #startErr { color:#fff; background:#5a1d1d; border-radius:10px; padding:10px 14px; display:none; max-width:28em; }
+  .mode { display:none; }
+  .mode.on { display:block; }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>Цвет для рыбака</h1>
+  <p>Наведите камеру на нитку и нажмите на неё пальцем — телефон скажет цвет.
+     Можно подобрать нитку к образцу или найти нитку по названию цвета.</p>
+  <p>Лучше всего работает при дневном свете. Под жёлтой лампой цвета сдвигаются.</p>
+  <button id="startBtn">Включить камеру</button>
+  <div id="startErr"></div>
+</div>
+
+<header>
+  <button class="tab on" data-mode="name">Что за цвет</button>
+  <button class="tab" data-mode="match">Подобрать к образцу</button>
+  <button class="tab" data-mode="find">Найти по названию</button>
+  <button id="voiceBtn" aria-label="Голос">🔊</button>
+</header>
+
+<div id="stage">
+  <canvas id="view"></canvas>
+  <video id="video" playsinline muted></video>
+  <div id="frozenTag">Стоп-кадр</div>
+</div>
+
+<div id="panel">
+  <div id="result"><span id="swatch"></span><span id="resultText"></span></div>
+  <div id="hint"></div>
+
+  <div class="mode on" data-mode="name"></div>
+
+  <div class="mode" data-mode="match">
+    <div class="row"><button id="newSample">Новый образец</button></div>
+  </div>
+
+  <div class="mode" data-mode="find">
+    <div class="row"><button id="micBtn">🎤 Сказать цвет</button></div>
+    <div class="grid" id="bases"></div>
+    <div class="row" id="shades"></div>
+  </div>
+
+  <div class="row"><button id="freezeBtn">⏸ Стоп-кадр</button></div>
+</div>
+
+<script src="color.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const video = $('#video'), view = $('#view'), vctx = view.getContext('2d');
+const frame = document.createElement('canvas'), fctx = frame.getContext('2d', { willReadFrequently: true });
+const grid = document.createElement('canvas'), gctx = grid.getContext('2d', { willReadFrequently: true });
+const GW = 96;             // ширина сетки для подсветки
+const MATCH_MIN = 80;      // с какого процента сходства обводить в режиме «Подобрать»
+
+let W = 0, H = 0, GH = 0;
+let mode = 'name', frozen = false;
+let marks = [];            // метки нажатий: {x, y, label, until, best}
+let sample = null;         // образец: {lab, name}
+let target = null;         // искомый цвет: {base, mod}
+let mask = null, maskTime = 0, maskDirty = true;
+let announceFind = false, lastFound = null;
+let voiceOn = true;
+try { voiceOn = localStorage.getItem('voice') !== 'off'; } catch (e) {}
+
+// ---------- голос ----------
+let ruVoice = null;
+function pickVoice() {
+  if (!('speechSynthesis' in window)) return;
+  ruVoice = speechSynthesis.getVoices().find(v => v.lang.toLowerCase().startsWith('ru')) || null;
+}
+if ('speechSynthesis' in window) { speechSynthesis.onvoiceschanged = pickVoice; pickVoice(); }
+function say(text) {
+  if (!voiceOn || !('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ru-RU';
+  if (ruVoice) u.voice = ruVoice;
+  speechSynthesis.speak(u);
+}
+function updateVoiceBtn() { $('#voiceBtn').textContent = voiceOn ? '🔊' : '🔇'; }
+$('#voiceBtn').onclick = () => {
+  voiceOn = !voiceOn;
+  try { localStorage.setItem('voice', voiceOn ? 'on' : 'off'); } catch (e) {}
+  if (!voiceOn && 'speechSynthesis' in window) speechSynthesis.cancel();
+  updateVoiceBtn();
+  if (voiceOn) say('Голос включён');
+};
+updateVoiceBtn();
+
+// ---------- вывод ----------
+function show(text, rgb) {
+  $('#resultText').textContent = text;
+  const sw = $('#swatch');
+  if (rgb) { sw.style.display = 'block'; sw.style.background = `rgb(${rgb})`; }
+  else sw.style.display = 'none';
+}
+const HINTS = {
+  name: 'Нажмите пальцем на нитку — телефон назовёт цвет.',
+  match: 'Сначала нажмите на образец (химию). Потом нажимайте на клубки — покажу, насколько похоже. Похожие места обведены.',
+  find: 'Выберите цвет кнопкой или скажите голосом. Подходящие нитки будут обведены.',
+};
+function setHint() {
+  let h = HINTS[mode];
+  if (mode === 'match' && sample) h = 'Образец запомнен. Нажимайте на клубки. Чтобы выбрать точно — нажмите «Стоп-кадр».';
+  if (!ruVoice && voiceOn && 'speechSynthesis' in window && speechSynthesis.getVoices().length)
+    h += ' Русский голос не найден — название показано на экране.';
+  $('#hint').textContent = h;
+}
+
+function percentWord(n) {
+  const a = n % 100, b = n % 10;
+  if (a >= 11 && a <= 14) return 'процентов';
+  if (b === 1) return 'процент';
+  if (b >= 2 && b <= 4) return 'процента';
+  return 'процентов';
+}
+function verdict(p) {
+  return p >= 90 ? 'почти одинаковые' : p >= 80 ? 'очень похоже' : p >= 65 ? 'похоже' : 'не похоже';
+}
+
+// ---------- режимы ----------
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  document.querySelectorAll('.mode').forEach(d => d.classList.toggle('on', d.dataset.mode === m));
+  marks = []; maskDirty = true; lastFound = null;
+  show(m === 'match' && sample ? 'Образец: ' + sample.name : m === 'find' && target ? 'Ищу: ' + targetText() : '');
+  setHint();
+}
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+$('#newSample').onclick = () => {
+  sample = null; marks = []; maskDirty = true;
+  show('Нажмите на образец');
+  setHint();
+  say('Нажмите на образец');
+};
+
+// кнопки цветов
+const SHADES = [['', 'любой'], ['бледно', 'бледный'], ['светло', 'светлый'], ['тёмно', 'тёмный'], ['ярко', 'яркий']];
+let pickBase = null, pickMod = '';
+function targetText() { return target.mod ? target.mod + '-' + target.base : target.base; }
+function renderPick() {
+  document.querySelectorAll('#bases button').forEach(b => b.classList.toggle('on', b.dataset.v === pickBase));
+  document.querySelectorAll('#shades button').forEach(b => b.classList.toggle('on', b.dataset.v === pickMod));
+}
+function setTarget(base, mod, speak) {
+  pickBase = base; pickMod = mod || '';
+  target = base ? { base, mod: pickMod } : null;
+  renderPick();
+  marks = []; maskDirty = true; announceFind = !!speak; lastFound = null;
+  show(target ? 'Ищу: ' + targetText() : '');
+}
+for (const b of Color.BASES) {
+  const el = document.createElement('button');
+  el.textContent = b; el.dataset.v = b;
+  el.onclick = () => setTarget(b, ['белый', 'чёрный'].includes(b) ? '' : pickMod, true);
+  $('#bases').append(el);
+}
+for (const [v, label] of SHADES) {
+  const el = document.createElement('button');
+  el.textContent = label; el.dataset.v = v;
+  el.onclick = () => { pickMod = v; if (pickBase) setTarget(pickBase, v, true); else renderPick(); };
+  $('#shades').append(el);
+}
+renderPick();
+
+// голосовой ввод
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) $('#micBtn').style.display = 'none';
+$('#micBtn').onclick = () => {
+  const r = new SR();
+  r.lang = 'ru-RU'; r.interimResults = false; r.maxAlternatives = 5;
+  const btn = $('#micBtn');
+  btn.classList.add('listening'); btn.textContent = '🎤 Слушаю…';
+  r.onresult = e => {
+    const alts = [...e.results[0]].map(a => a.transcript);
+    const got = alts.map(Color.parse).find(Boolean);
+    if (got) setTarget(got.base, got.mod, true);
+    else { show('Не понял: «' + alts[0] + '»'); say('Не понял, повторите'); }
+  };
+  r.onerror = e => {
+    const msg = e.error === 'network' ? 'Для голоса нужен интернет. Выберите цвет кнопкой.'
+      : e.error === 'not-allowed' ? 'Нет доступа к микрофону. Выберите цвет кнопкой.'
+      : 'Не расслышал. Попробуйте ещё раз.';
+    show(msg);
+  };
+  r.onend = () => { btn.classList.remove('listening'); btn.textContent = '🎤 Сказать цвет'; };
+  try { r.start(); } catch (e) { r.onend(); }
+};
+
+// стоп-кадр
+function setFrozen(f) {
+  frozen = f;
+  $('#freezeBtn').textContent = f ? '▶ Продолжить' : '⏸ Стоп-кадр';
+  $('#frozenTag').style.display = f ? 'block' : 'none';
+  if (!f) marks = [];
+  maskDirty = true;
+}
+$('#freezeBtn').onclick = () => setFrozen(!frozen);
+
+// ---------- камера ----------
+$('#startBtn').onclick = async () => {
+  const err = $('#startErr');
+  err.style.display = 'none';
+  say('');  // разблокировать голос нажатием
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+    $('#start').style.display = 'none';
+    setMode('name');
+    requestAnimationFrame(loop);
+  } catch (e) {
+    err.style.display = 'block';
+    err.textContent = e && e.name === 'NotAllowedError'
+      ? 'Камера запрещена. Нажмите на значок слева от адреса сайта → Разрешения → Камера → Разрешить. Потом обновите страницу.'
+      : !navigator.mediaDevices ? 'Браузер не даёт камеру. Откройте ссылку в Chrome.'
+      : 'Не удалось включить камеру: ' + (e && e.message || e);
+  }
+};
+
+function resize() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  if (vw !== W || vh !== H) {
+    W = frame.width = view.width = vw;
+    H = frame.height = view.height = vh;
+    GH = Math.max(1, Math.round(GW * H / W));
+    grid.width = GW; grid.height = GH;
+    marks = []; maskDirty = true;
+  }
+  const st = $('#stage'), k = Math.min(st.clientWidth / W, st.clientHeight / H);
+  view.style.width = Math.floor(W * k) + 'px';
+  view.style.height = Math.floor(H * k) + 'px';
+}
+window.addEventListener('resize', resize);
+video.addEventListener('resize', resize);
+
+// ---------- цвет в точке ----------
+function sampleAt(x, y) {
+  const r = Math.max(3, Math.round(W * 0.008));
+  const x0 = Math.max(0, Math.round(x - r)), y0 = Math.max(0, Math.round(y - r));
+  const w = Math.min(W - x0, 2 * r + 1), h = Math.min(H - y0, 2 * r + 1);
+  const d = fctx.getImageData(x0, y0, w, h).data;
+  const R = [], G = [], B = [];
+  for (let i = 0; i < d.length; i += 4) { R.push(d[i]); G.push(d[i + 1]); B.push(d[i + 2]); }
+  const med = a => a.sort((p, q) => p - q)[a.length >> 1];
+  const rgb = [med(R), med(G), med(B)];
+  return { rgb, lab: Color.toLab(rgb[0], rgb[1], rgb[2]) };
+}
+
+view.addEventListener('click', e => {
+  if (!W) return;
+  const rc = view.getBoundingClientRect();
+  const x = (e.clientX - rc.left) * W / rc.width, y = (e.clientY - rc.top) * H / rc.height;
+  const s = sampleAt(x, y);
+  const name = Color.nameLab(s.lab).text;
+  const until = frozen ? Infinity : performance.now() + 3000;
+
+  if (mode === 'name') {
+    marks = [{ x, y, label: name, until }];
+    show(name, s.rgb);
+    say(name);
+  } else if (mode === 'match') {
+    if (!sample) {
+      sample = { lab: s.lab, name, rgb: s.rgb };
+      marks = [{ x, y, label: 'образец', until }];
+      show('Образец: ' + name, s.rgb);
+      say('Образец запомнен, ' + name);
+      setHint(); maskDirty = true;
+    } else {
+      const p = Color.similarity(s.lab, sample.lab);
+      if (!frozen) marks = marks.filter(m => m.label === 'образец' && m.until > performance.now());
+      marks.push({ x, y, label: p + '%', until, p });
+      const best = Math.max(...marks.filter(m => m.p != null).map(m => m.p));
+      marks.forEach(m => m.best = m.p != null && m.p === best && marks.filter(q => q.p != null).length > 1);
+      show(`${p}% — ${verdict(p)} (${name})`, s.rgb);
+      say(`${p} ${percentWord(p)}, ${verdict(p)}`);
+    }
+  } else if (mode === 'find') {
+    marks = [{ x, y, label: name, until }];
+    show(name, s.rgb);
+    say(name);
+  }
+});
+
+// ---------- подсветка ----------
+function computeMask() {
+  let test = null;
+  if (mode === 'match' && sample) test = lab => Color.similarity(lab, sample.lab) >= MATCH_MIN;
+  if (mode === 'find' && target) test = lab => Color.matches(Color.nameLab(lab), target);
+  if (!test) return null;
+  gctx.drawImage(frame, 0, 0, GW, GH);
+  const d = gctx.getImageData(0, 0, GW, GH).data;
+  const raw = new Uint8Array(GW * GH);
+  for (let i = 0, j = 0; i < raw.length; i++, j += 4) raw[i] = test(Color.toLab(d[j], d[j + 1], d[j + 2])) ? 1 : 0;
+  // убрать одиночные точки: клетка считается, если вокруг неё большинство подходит
+  const m = new Uint8Array(GW * GH);
+  let count = 0;
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    let s = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < GW && yy < GH) s += raw[yy * GW + xx];
+    }
+    if (s >= 5) { m[y * GW + x] = 1; count++; }
+  }
+  return { m, count };
+}
+
+function drawMask(mk) {
+  const cw = W / GW, ch = H / GH, m = mk.m;
+  const at = (x, y) => x >= 0 && y >= 0 && x < GW && y < GH && m[y * GW + x];
+  vctx.fillStyle = 'rgba(0,0,0,0.6)';
+  vctx.beginPath();
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) if (!m[y * GW + x]) vctx.rect(x * cw, y * ch, cw + 0.5, ch + 0.5);
+  vctx.fill();
+  if (!mk.count) return;
+  vctx.beginPath();
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    if (!m[y * GW + x]) continue;
+    const X = x * cw, Y = y * ch;
+    if (!at(x, y - 1)) { vctx.moveTo(X, Y); vctx.lineTo(X + cw, Y); }
+    if (!at(x, y + 1)) { vctx.moveTo(X, Y + ch); vctx.lineTo(X + cw, Y + ch); }
+    if (!at(x - 1, y)) { vctx.moveTo(X, Y); vctx.lineTo(X, Y + ch); }
+    if (!at(x + 1, y)) { vctx.moveTo(X + cw, Y); vctx.lineTo(X + cw, Y + ch); }
+  }
+  const lw = Math.max(2, W / 250);
+  vctx.lineCap = 'round';
+  vctx.strokeStyle = '#000'; vctx.lineWidth = lw * 3; vctx.stroke();
+  vctx.strokeStyle = '#fff'; vctx.lineWidth = lw; vctx.stroke();
+}
+
+function drawMarks() {
+  const now = performance.now();
+  marks = marks.filter(m => m.until > now);
+  const r = W * 0.025, fs = Math.round(W * 0.04);
+  vctx.font = `bold ${fs}px system-ui, sans-serif`;
+  vctx.textBaseline = 'middle';
+  for (const m of marks) {
+    vctx.lineWidth = m.best ? r * 0.35 : r * 0.2;
+    vctx.strokeStyle = '#000'; vctx.beginPath(); vctx.arc(m.x, m.y, r, 0, 7); vctx.stroke();
+    vctx.lineWidth *= 0.5;
+    vctx.strokeStyle = '#fff'; vctx.beginPath(); vctx.arc(m.x, m.y, r, 0, 7); vctx.stroke();
+    const label = m.best ? '★ ' + m.label : m.label;
+    const tw = vctx.measureText(label).width, pad = fs * 0.3;
+    let lx = m.x - tw / 2, ly = m.y - r - fs * 0.9;
+    lx = Math.max(pad, Math.min(W - tw - pad, lx));
+    if (ly < fs) ly = m.y + r + fs * 0.9;
+    vctx.fillStyle = 'rgba(0,0,0,0.8)';
+    vctx.fillRect(lx - pad, ly - fs * 0.65, tw + pad * 2, fs * 1.3);
+    if (m.best) { vctx.strokeStyle = '#fff'; vctx.lineWidth = 3; vctx.strokeRect(lx - pad, ly - fs * 0.65, tw + pad * 2, fs * 1.3); }
+    vctx.fillStyle = '#fff';
+    vctx.fillText(label, lx, ly);
+  }
+}
+
+function loop(t) {
+  resize();
+  if (W) {
+    if (!frozen && video.readyState >= 2) fctx.drawImage(video, 0, 0, W, H);
+    vctx.drawImage(frame, 0, 0);
+    if (maskDirty || (!frozen && t - maskTime > 150)) {
+      mask = computeMask(); maskTime = t; maskDirty = false;
+      if (mode === 'find' && target && mask) {
+        const found = mask.count > 0;
+        if (announceFind) { announceFind = false; say(found ? targetText() + ': нашлось, обвёл' : targetText() + ' не видно'); }
+        if (found !== lastFound && !marks.length) show('Ищу: ' + targetText() + (found ? ' — обведено' : ' — не видно'));
+        lastFound = found;
+      }
+    }
+    if (mask) drawMask(mask);
+    drawMarks();
+  }
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
